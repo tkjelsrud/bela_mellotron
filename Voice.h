@@ -12,8 +12,8 @@ public:
     float position = 0.0;
     float amplitude = 1.0;
     float frequency = 1.0;
-    float attackTime = 0.01;   // Attack time in seconds
-    float releaseTime = 0.2;   // Release time in seconds
+    float attackTime = 0.1;   // Attack time in seconds
+    float releaseTime = 0.5;   // Release time in seconds
     float currentAmplitude = 0.0;  // Current envelope value
     bool releasing = false;    // Whether the note is in release phase
     bool looping = true;       // Whether to loop the sample when it reaches the end

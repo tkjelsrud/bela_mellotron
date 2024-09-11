@@ -12,10 +12,17 @@ Midi gMidi;
 const char* gMidiPort0 = "hw:1,0,0";  // MIDI device port
 
 // Sample map to store the loaded samples
-std::map<int, Sample> sampleMap;
+std::map<int, Sample> sampleMapSet1;  // First set of samples
+std::map<int, Sample> sampleMapSet2;  // Second set of samples
+std::map<int, Sample>* currentSampleMap = &sampleMapSet1;  // Pointer to the currently active set
 
 // Global voice manager, initialized with a dummy sample rate (will be properly initialized in setup)
 VoiceManager voiceManager(0);
+
+float fadeOutTime = 0.1;   // Time in seconds for the fade-out (e.g., 10ms)
+float fadeInTime = 0.1;    // Time in seconds for the fade-in (e.g., 10ms)
+float currentFadeLevel = 1.0;  // Starts fully faded in
+bool switchingSamples = false;  // Flag to indicate when switching sample sets
 
 // Function to map note names like A2, A#2, etc. to MIDI note numbers
 int mapNoteToMidi(const std::string& noteName) {
@@ -29,7 +36,7 @@ int mapNoteToMidi(const std::string& noteName) {
 }
 
 // Load .wav files from a directory and store them in the sampleMap
-bool loadSamples(const std::string& folderPath) {
+bool loadSamples(const std::string& folderPath, std::map<int, Sample>& sampleMap) {
     DIR *dir;
     struct dirent *ent;
     if ((dir = opendir(folderPath.c_str())) != NULL) {
@@ -41,7 +48,7 @@ bool loadSamples(const std::string& folderPath) {
 
                 // Load the .wav file using AudioFileUtilities
                 std::vector<std::vector<float>> audioBuffer;
-                int sampleRate;
+                int sampleRate = 22050;  // Assuming a default sample rate (replace if needed)
                 int startFrame = 0;
                 int endFrame = -1;
                 
@@ -61,10 +68,10 @@ bool loadSamples(const std::string& folderPath) {
     }
     return true;
 }
-
 // Function called when a MIDI note on is received
 void noteOn(int noteNumber, int velocity) {
-    if (sampleMap.find(noteNumber) != sampleMap.end()) {
+    // Dereference the currentSampleMap pointer to access the map
+    if (currentSampleMap->find(noteNumber) != currentSampleMap->end()) {
         float velocityAmplitude = velocity / 127.0f;  // Map velocity to amplitude (0-1)
         voiceManager.noteOn(noteNumber, velocityAmplitude);
     }
@@ -89,9 +96,15 @@ bool setup(BelaContext *context, void *userData) {
     gMidi.writeTo(gMidiPort0);
     gMidi.enableParser(true);
 
-    // Load samples from the specified folder
-    std::string sampleFolder = "/root/Bela/projects/mellotron/samples/trombone";
-    if (!loadSamples(sampleFolder)) {
+    // Load the first set of samples
+    std::string sampleFolderSet1 = "/root/Bela/projects/mellotron/samples/trombone";
+    if (!loadSamples(sampleFolderSet1, sampleMapSet1)) {
+        return false;
+    }
+
+    // Load the second set of samples (another folder with different sounds)
+    std::string sampleFolderSet2 = "/root/Bela/projects/mellotron/samples/flute";
+    if (!loadSamples(sampleFolderSet2, sampleMapSet2)) {
         return false;
     }
 
@@ -104,34 +117,45 @@ void render(BelaContext *context, void *userData) {
     while (gMidi.getParser()->numAvailableMessages() > 0) {
         MidiChannelMessage message = gMidi.getParser()->getNextChannelMessage();
 
-        // Log incoming MIDI messages
-        //rt_printf("MIDI message received: Type = %d, Note = %d, Velocity = %d\n",
-        //          message.getType(), message.getDataByte(0), message.getDataByte(1));
+        int noteNumber = message.getDataByte(0);  // Note number is in message[0]
+        int velocity = message.getDataByte(1);    // Velocity or CC value is in message[1]
 
-        int noteNumber = message.getDataByte(0);  // Note number is always in message[0]
-        int velocity = message.getDataByte(1);    // Velocity is in message[1]
+        // Handle Control Change (CC) messages
+        if (message.getType() == kmmControlChange) {
+            int ccNumber = noteNumber;  // CC number is in the first data byte
+            int ccValue = velocity;     // CC value is in the second data byte
+
+            // Assuming we're using CC #1 for switching sample sets
+            if (ccNumber == 1) {
+                if (ccValue < 64) {
+                    currentSampleMap = &sampleMapSet1;  // Switch to set 1
+                } else {
+                    currentSampleMap = &sampleMapSet2;  // Switch to set 2
+                }
+            }
+        }
 
         // Handle noteOn and noteOff messages
         if (message.getType() == kmmNoteOn && velocity > 0) {
-            // Note On with velocity > 0
             noteOn(noteNumber, velocity);
         } else if (message.getType() == kmmNoteOff || (message.getType() == kmmNoteOn && velocity == 0)) {
-            // Note Off (either explicit noteOff or noteOn with velocity 0)
-            rt_printf("Note Off processed for note: %d\n", noteNumber);
             noteOff(noteNumber);
         }
     }
 
-    // Render audio output
+    // Render mono audio output
     for (unsigned int frame = 0; frame < context->audioFrames; ++frame) {
         float output = 0.0f;
-        voiceManager.render(&output, 1, sampleMap);
+
+        // Render audio using the currently selected sample map
+        voiceManager.render(&output, 1, *currentSampleMap);
+
+        // Write the mono output to all audio output channels
         for (unsigned int channel = 0; channel < context->audioOutChannels; channel++) {
             audioWrite(context, frame, channel, output);
         }
     }
 }
-
 // Bela cleanup function
 void cleanup(BelaContext *context, void *userData) {
     // Cleanup resources if necessary
